@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 from pytube import YouTube
 from detectors import DSFD
 
-def get_youtube(url, resolutions='720p', use_cache=True):
+def get_youtube(url, resolutions='720p', use_cache=False):
     """Get Youtube Video from url
     :param str url:
         Youtube url to download make sure url is available
@@ -39,7 +39,7 @@ def get_youtube(url, resolutions='720p', use_cache=True):
     return videos
 
 if __name__ == '__main__':
-    frames = get_youtube("https://www.youtube.com/watch?v=6RLLOEzdxsM")
+    frames = get_youtube("https://www.youtube.com/watch?v=q7Q9DZKVVrI")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
