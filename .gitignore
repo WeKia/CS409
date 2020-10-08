@@ -131,3 +131,5 @@ dmypy.json
 # custom
 *.mp4
 *.pth
+*.t7
+

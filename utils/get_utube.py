@@ -2,32 +2,41 @@ import cv2
 import torch
 import numpy as np
 import mmcv
+import os
 
 from PIL import Image, ImageDraw
 from pytube import YouTube
 from detectors import DSFD
 
-def get_youtube(url):
+def get_youtube(url, resolutions='720p', use_cache=True):
     """Get Youtube Video from url
     :param str url:
         Youtube url to download make sure url is available
 
     :return frames:
         Frames of video """
+    
+    folder = '/home/ubuntu/project/tmp/'
 
     yt = YouTube(url)
 
     # Highest resolution is too big!
     #stream = yt.streams.filter(file_extension='mp4').order_by('resolution').desc().first()
+    
+    videos = []
 
-    stream = yt.streams.filter(file_extension='mp4', res="720p").first()
-    #stream = yt.streams.get_highest_resolution()
-    stream.download(filename='tmp')
+    for res in resolutions:
+        
+        if not os.path.exists(folder + f'tmp_{res}.mp4'):
+            stream = yt.streams.filter(file_extension='mp4', res=res).first()
+            stream.download(output_path=folder ,filename=f'tmp_{res}')
 
-    video = mmcv.VideoReader('tmp.mp4')
-    frames = [cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) for frame in video]
+        video = mmcv.VideoReader(folder + f'tmp_{res}.mp4')
+        frames = [cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) for frame in video]
+        
+        videos.append(frames)
 
-    return frames
+    return videos
 
 if __name__ == '__main__':
     frames = get_youtube("https://www.youtube.com/watch?v=6RLLOEzdxsM")
