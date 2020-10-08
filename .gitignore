@@ -132,4 +132,4 @@ dmypy.json
 *.mp4
 *.pth
 *.t7
-tmp/*
+*.webm
