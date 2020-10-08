@@ -27,7 +27,7 @@ def get_youtube(url, resolutions='720p', use_cache=True):
 
     for res in resolutions:
         
-        if not os.path.exists(folder + f'tmp_{res}.mp4'):
+        if (not os.path.exists(folder + f'tmp_{res}.mp4')) or not use_cache:
             stream = yt.streams.filter(file_extension='mp4', res=res).first()
             stream.download(output_path=folder ,filename=f'tmp_{res}')
 
