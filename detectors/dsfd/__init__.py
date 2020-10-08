@@ -6,13 +6,13 @@ from torchvision import transforms
 from .nets import DSFDNet
 from .box_utils import nms_
 
-PATH_WEIGHT = './detectors/dsfd/weights/dsfd_vgg_0.880.pth'
+
 img_mean = np.array([104., 117., 123.])[:, np.newaxis, np.newaxis].astype('float32')
 
 
 class DSFD():
 
-    def __init__(self, device='cuda'):
+    def __init__(self, device='cuda', PATH_WEIGHT = './detectors/dsfd/weights/dsfd_vgg_0.880.pth'):
 
         tstamp = time.time()
         self.device = device
