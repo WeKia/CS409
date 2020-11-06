@@ -133,3 +133,4 @@ dmypy.json
 *.pth
 *.t7
 *.webm
+*.jpg
