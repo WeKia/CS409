@@ -46,4 +46,7 @@ def get_videos_from_file(path):
     video = mmcv.VideoReader(path)
 
     frames = [cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) for frame in video]
+
+    del video
+    
     return frames

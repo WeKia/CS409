@@ -8,6 +8,7 @@ import math
 import numpy as np
 import cv2
 
+#from memory_profiler import profile
 from facenet_pytorch import MTCNN, InceptionResnetV1
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
@@ -19,10 +20,19 @@ from utils.ops import xyxy_to_xywh
 class detected_object:
     def __init__(self, id):
         self.id = id
+        self.frames = []
+        self.boxes = []
         self.faces = []
 
     def update(self, frame_num, box, embed):
-        self.faces.append((frame_num, box, embed))
+        self.frames.append(frame_num)
+        self.boxes.append(box)
+        self.faces.append(embed)
+
+    def merge(self, obj):
+        self.frames += obj.frames
+        self.boxes += obj.boxes
+        self.faces += obj.faces
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
@@ -32,6 +42,8 @@ def parse_arguments():
     parser.add_argument('--video2', type=str)
     parser.add_argument('--test', action='store_true')
     parser.add_argument('--comparing', action='store_true')
+    parser.add_argument('--compare_threshold', default=0.5, type=float)
+    parser.add_argument('--webm', action='store_true')
 
     # Followings are formats for int, float, Use them if argument type is int or float
     #parser.add_argument('--intformat', type=int, default=32)
@@ -62,47 +74,6 @@ def embed_img(img, box, model, img_size=160):
     return embed
 
 @profile
-def clustering(objects):
-
-    means = []
-
-    for obj in objects:
-        arr = []
-
-        for face in obj.faces:
-            arr.append(np.array(face[2]))
-            
-        mean = np.stack(arr).mean(axis=0)
-
-        means.append(mean)
-
-        dist = []
-
-        for face in obj.faces:
-            dist.append(np.linalg.norm(np.array(face[2]) - mean))
-
-        dist = np.array(dist)
-
-    clustering = DBSCAN(eps=0.5, min_samples=1).fit(means)
-
-    lab = clustering.labels_
-
-    detected = []
-
-    for i, u in enumerate(np.unique(lab)):
-        same_objs = objects[lab==u]
-
-        first = same_objs[0]
-        first.id = i
-
-        for obj in same_objs[1:]:
-            first.faces += obj.faces
-
-        detected.append(first)
-
-    return detected
-
-@profile
 def tracking(videos):
 
     detector = DSFD(device=device, PATH_WEIGHT = '/home/ubuntu/project/detectors/dsfd/weights/dsfd_vgg_0.880.pth')
@@ -120,7 +91,7 @@ def tracking(videos):
         for frame in tqdm(video, desc="Frame Processed :"):
             img = frame.copy()
 
-            boxes = detector.detect_faces(img, scales=[0.5, 1.0])
+            boxes = detector.detect_faces(img, scales=[0.7])
 
             if len(boxes) > 0:
 
@@ -154,6 +125,93 @@ def tracking(videos):
     
     return objects
 
+
+@profile
+def clustering(objects):
+
+    means = []
+
+    for obj in objects:
+        arr = []
+
+        for face in obj.faces:
+            arr.append(np.array(face))
+            
+        mean = np.stack(arr).mean(axis=0)
+
+        means.append(mean)
+
+        dist = []
+
+        for face in obj.faces:
+            dist.append(np.linalg.norm(np.array(face) - mean))
+
+        dist = np.array(dist)
+
+    clustering = DBSCAN(eps=0.5, min_samples=1).fit(means)
+
+    lab = clustering.labels_
+
+    detected = []
+
+    for i, u in enumerate(np.unique(lab)):
+        same_objs = objects[lab==u]
+
+        first = same_objs[0]
+        first.id = i
+
+        for obj in same_objs[1:]:
+            first.merge(obj)
+
+        detected.append(first)
+
+    return detected
+
+
+@profile
+def comparing(objects):
+    
+    detected = []
+    objects = list(objects)
+
+    print(f"object length : {len(objects)}")
+
+    while len(objects) > 0:
+        popped, objects = objects[0], objects[1:]
+
+        arr = []
+
+        for face in popped.faces:
+            arr.append(np.array(face))
+            
+        popped_mean_face = np.stack(arr).mean(axis=0)
+
+        popped.id = len(detected)
+        detected.append(popped)
+
+        remove_list = []
+
+        for obj in objects:
+
+            if len(set(obj.frames) & set(popped.frames)) > 0:
+                continue
+
+            arr = []
+
+            for face in obj.faces:
+                arr.append(np.array(face))
+                
+            mean = np.stack(arr).mean(axis=0)
+
+            if (np.linalg.norm(mean - popped_mean_face) <= args.compare_threshold):
+                remove_list.append(obj)
+                popped.merge(obj)
+            
+        for obj in remove_list:
+            objects.remove(obj)
+
+    return detected
+
 def main(args):
 
     # Get frames from video
@@ -161,22 +219,24 @@ def main(args):
 
     if args.test:
         video2_frames = []
-        video1_frames = video1_frames[:100]
+        #video1_frames = video1_frames[:1000]
     else:
         video2_frames = get_videos_from_file(args.video2)
 
     videos = [video1_frames, video2_frames]
+
+    del video1_frames
 
     objects = tracking(videos)
 
     objects = np.array(objects)
 
     if args.comparing:
-        pass
+        detected = comparing(objects)
     else:
         detected = clustering(objects)
 
-    return detected
+    return detected, videos
 
 def get_color(c, x, max_val):
         colors = np.array([[1, 0, 1], [0, 0, 1], [0, 1, 1], [0, 1, 0], [1, 1, 0], [1, 0, 0]], dtype=np.float32)
@@ -189,11 +249,7 @@ def get_color(c, x, max_val):
         return int(r * 255)
 
 def test(args):
-    video1_frames = get_videos_from_file(args.video1)
-
-    videos = [video1_frames[:100]]
-
-    objects = main(args)
+    objects, videos = main(args)
 
     H, W, _ = videos[0][0].shape
     
@@ -203,8 +259,9 @@ def test(args):
 
     for obj in objects:
 
-        for info in obj.faces:            
-            frame_num, box, _ = info
+        for i in range(len(obj.faces)):            
+            frame_num = obj.frames[i]
+            box = obj.boxes[i]
 
             frame = frames[frame_num]
 
@@ -229,9 +286,20 @@ def test(args):
 
     fourcc = cv2.VideoWriter_fourcc(*'XVID')   
     video_tracked = cv2.VideoWriter(f'/home/ubuntu/project/tmp/video_tracked_720p.mp4', fourcc, 20.0, dim)
+
     for frame in frames:
         video_tracked.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        
     video_tracked.release()
+
+    if args.webm:
+        fourcc = cv2.VideoWriter_fourcc(*'VP90')   
+        webm = cv2.VideoWriter('/home/ubuntu/project/tmp/video_tracked_720p.webm', fourcc, 20.0, dim)
+
+        for frame in frames:
+            webm.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        
+        webm.release()
 
 if __name__ == "__main__":
     init_time = time.time()
