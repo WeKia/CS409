@@ -3,7 +3,6 @@ import torch
 import warnings
 warnings.simplefilter("ignore", UserWarning)
 
-import glob
 import time
 import math
 import numpy as np
@@ -42,8 +41,9 @@ def parse_arguments():
     parser.add_argument('--video1', type=str)
     parser.add_argument('--video2', type=str)
     parser.add_argument('--test', action='store_true')
+    parser.add_argument('--comparing', action='store_true')
+    parser.add_argument('--compare_threshold', default=0.5, type=float)
     parser.add_argument('--webm', action='store_true')
-    parser.add_argument('--compare_threshold', default=0.9, type=float)
 
     # Followings are formats for int, float, Use them if argument type is int or float
     #parser.add_argument('--intformat', type=int, default=32)
@@ -74,32 +74,20 @@ def embed_img(img, box, model, img_size=160):
     return embed
 
 @profile
-def detecting(videos):
+def tracking(videos):
 
     detector = DSFD(device=device, PATH_WEIGHT = '/home/ubuntu/project/detectors/dsfd/weights/dsfd_vgg_0.880.pth')
     facenet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
 
     sort_weight = '/home/ubuntu/project/deepsort/deep/checkpoint/ckpt.t7'
 
-    person_paths = glob.glob("/home/ubuntu/project/tmp/faces/*.png")
-    person = []
-
-    for path in person_paths:
-        img = cv2.imread(path)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-        boxes = detector.detect_faces(img, scales=[1.0])
-
-        assert (len(boxes) == 1)
-
-        box = boxes[0, 0:4]
-        embed = embed_img(img, box, facenet)
-        person.append(embed)
-
     frame_num = 0
     objects = []
 
     for video in videos:
+
+        tracker = DeepSort(model_path=sort_weight, nms_max_overlap=0.5, use_cuda=True, max_age=1)
+
         for frame in tqdm(video, desc="Frame Processed :"):
             img = frame.copy()
 
@@ -107,39 +95,122 @@ def detecting(videos):
 
             if len(boxes) > 0:
 
-                boxes = boxes[:, 0:4]
+                boxes, scores = boxes[:, 0:4], boxes[:, 4]
 
-                for box in boxes:
-                    id = 0 # Defalut = None
+                #transform xyxy boxes to xywh
+                boxes = xyxy_to_xywh(boxes)
 
-                    new_obj = True
+                outputs = tracker.update(boxes, scores, img)
+            
+            else: outputs = []
 
-                    embed = embed_img(img, box, facenet)
+            for box in outputs:
+                id = box[-1]
+                new_obj = True
 
-                    min_norm = float("inf")
+                embed = embed_img(img, box, facenet)
 
-                    for i, p in enumerate(person):
-                        norm = np.linalg.norm(embed - p)
+                for obj in objects:
+                    if obj.id == id:
+                        obj.update(frame_num, box[:4], embed)
+                        new_obj = False
+                        break
 
-                        if norm <= args.compare_threshold:
-                            if norm < min_norm:
-                                min_norm = norm
-                                id = i + 1
+                if new_obj:
+                    obj = detected_object(id)
+                    obj.update(frame_num, box[:4], embed)
+                    objects.append(obj)
 
-                    for obj in objects:
-                        if obj.id == id:
-                            obj.update(frame_num, box, embed)
-                            new_obj = False
-                            break
-
-                    if new_obj:
-                        obj = detected_object(id)
-                        obj.update(frame_num, box, embed)
-                        objects.append(obj)
             frame_num += 1
     
     return objects
 
+
+@profile
+def clustering(objects):
+
+    means = []
+
+    for obj in objects:
+        arr = []
+
+        for face in obj.faces:
+            arr.append(np.array(face))
+            
+        mean = np.stack(arr).mean(axis=0)
+
+        means.append(mean)
+
+        dist = []
+
+        for face in obj.faces:
+            dist.append(np.linalg.norm(np.array(face) - mean))
+
+        dist = np.array(dist)
+
+    clustering = DBSCAN(eps=0.5, min_samples=1).fit(means)
+
+    lab = clustering.labels_
+
+    detected = []
+
+    for i, u in enumerate(np.unique(lab)):
+        same_objs = objects[lab==u]
+
+        first = same_objs[0]
+        first.id = i
+
+        for obj in same_objs[1:]:
+            first.merge(obj)
+
+        detected.append(first)
+
+    return detected
+
+
+@profile
+def comparing(objects):
+    
+    detected = []
+    objects = list(objects)
+
+    print(f"object length : {len(objects)}")
+
+    while len(objects) > 0:
+        popped, objects = objects[0], objects[1:]
+
+        arr = []
+
+        for face in popped.faces:
+            arr.append(np.array(face))
+            
+        popped_mean_face = np.stack(arr).mean(axis=0)
+
+        popped.id = len(detected)
+        detected.append(popped)
+
+        remove_list = []
+
+        for obj in objects:
+
+            if len(set(obj.frames) & set(popped.frames)) > 0:
+                continue
+
+            arr = []
+
+            for face in obj.faces:
+                arr.append(np.array(face))
+                
+            mean = np.stack(arr).mean(axis=0)
+
+            if (np.linalg.norm(mean - popped_mean_face) <= args.compare_threshold):
+                remove_list.append(obj)
+                popped.merge(obj)
+            
+        for obj in remove_list:
+            objects.remove(obj)
+
+    return detected
 
 def main(args):
 
@@ -148,7 +219,7 @@ def main(args):
 
     if args.test:
         video2_frames = []
-        #video1_frames = video1_frames[:100]
+        #video1_frames = video1_frames[:1000]
     else:
         video2_frames = get_videos_from_file(args.video2)
 
@@ -156,9 +227,14 @@ def main(args):
 
     del video1_frames
 
-    objects = detecting(videos)
+    objects = tracking(videos)
 
-    detected = np.array(objects)
+    objects = np.array(objects)
+
+    if args.comparing:
+        detected = comparing(objects)
+    else:
+        detected = clustering(objects)
 
     return detected, videos
 
