@@ -2,6 +2,7 @@ import argparse
 import torch
 import warnings
 warnings.simplefilter("ignore", UserWarning)
+warnings.simplefilter("ignore", FutureWarning)
 
 import glob
 import time
@@ -11,10 +12,10 @@ import cv2
 
 #from memory_profiler import profile
 from facenet_pytorch import MTCNN, InceptionResnetV1
-from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 from deepsort.deep_sort import DeepSort
-from detectors import DSFD
+from InsightFace.model import Backbone
+from utils.detect_align import detect_align_face, test_transform
 from utils.video_pipeline import get_videos_from_file
 from utils.ops import xyxy_to_xywh
 
@@ -43,7 +44,7 @@ def parse_arguments():
     parser.add_argument('--video2', type=str)
     parser.add_argument('--test', action='store_true')
     parser.add_argument('--webm', action='store_true')
-    parser.add_argument('--compare_threshold', default=0.9, type=float)
+    parser.add_argument('--compare_threshold', default=1.0, type=float)
 
     # Followings are formats for int, float, Use them if argument type is int or float
     #parser.add_argument('--intformat', type=int, default=32)
@@ -51,50 +52,42 @@ def parse_arguments():
     args = parser.parse_args()
     return args
 
-def embed_img(img, box, model, img_size=160):
-    x1, y1, x2, y2 = box[0:4]
-    x1 = int(x1)
-    y1 = int(y1)
-    x2 = int(x2)
-    y2 = int(y2)
+def embed_img(face, embedder):
+    trans_img = test_transform(face).to('cuda').unsqueeze(0)
 
-    img_cropped = img[y1:y2, x1:x2]
-    img_cropped = cv2.resize(img_cropped, (img_size, img_size), interpolation=cv2.INTER_AREA)
-    img_cropped = (img_cropped - 127.5) /128.0
-    img_cropped = torch.tensor(img_cropped, dtype=torch.float32)
-
-    # change (heigth, Width, channel) to (channel, heigth, width)
-    img_cropped = img_cropped.permute(2, 0, 1)
-    img_cropped = img_cropped.unsqueeze(dim=0).to(device)
-
-    embed = model(img_cropped).detach().cpu()[0]
-    
-    del img_cropped
+    with torch.no_grad():
+        embed = embedder(trans_img)
 
     return embed
 
 @profile
 def detecting(videos):
 
-    detector = DSFD(device=device, PATH_WEIGHT = '/home/ubuntu/project/detectors/dsfd/weights/dsfd_vgg_0.880.pth')
-    facenet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
+    detector = MTCNN(image_size=112, device=device, post_process=False, thresholds=[0.7, 0.8, 0.9])
+    arcface = Backbone(50, 0.6, 'ir_se').to('cuda')
+
+    arcface.load_state_dict(torch.load('/home/ubuntu/project/InsightFace/weights/ir_50se.pth'))
+    arcface.eval()
 
     sort_weight = '/home/ubuntu/project/deepsort/deep/checkpoint/ckpt.t7'
 
     person_paths = glob.glob("/home/ubuntu/project/tmp/faces/*.png")
-    person = []
+    person = None
 
     for path in person_paths:
         img = cv2.imread(path)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        boxes = detector.detect_faces(img, scales=[1.0])
+        _, faces = detect_align_face(img, detector)
 
-        assert (len(boxes) == 1)
+        assert (len(faces) == 1)
 
-        box = boxes[0, 0:4]
-        embed = embed_img(img, box, facenet)
-        person.append(embed)
+        embed = embed_img(faces[0], arcface)
+
+        if person is None:
+            person = embed
+        else:
+            person = torch.cat([person, embed])
 
     frame_num = 0
     objects = []
@@ -103,28 +96,25 @@ def detecting(videos):
         for frame in tqdm(video, desc="Frame Processed :"):
             img = frame.copy()
 
-            boxes = detector.detect_faces(img, scales=[0.7])
+            boxes, faces = detect_align_face(img, detector)
 
             if len(boxes) > 0:
 
                 boxes = boxes[:, 0:4]
 
-                for box in boxes:
+                for box, face in zip(boxes, faces):
                     id = 0 # Defalut = None
 
                     new_obj = True
 
-                    embed = embed_img(img, box, facenet)
+                    embed = embed_img(face, arcface)
 
-                    min_norm = float("inf")
+                    norm = (embed - person).norm(dim=1)
 
-                    for i, p in enumerate(person):
-                        norm = np.linalg.norm(embed - p)
+                    norm, idx = torch.min(norm).item(), torch.argmin(norm).item()
 
-                        if norm <= args.compare_threshold:
-                            if norm < min_norm:
-                                min_norm = norm
-                                id = i + 1
+                    if norm <= args.compare_threshold:
+                        id = idx + 1
 
                     for obj in objects:
                         if obj.id == id:

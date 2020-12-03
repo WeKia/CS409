@@ -16,6 +16,7 @@ from deepsort.deep_sort import DeepSort
 from detectors import DSFD
 from utils.video_pipeline import get_videos_from_file
 from utils.ops import xyxy_to_xywh
+from utils.scene_dectector import scene_detect
 
 class detected_object:
     def __init__(self, id):
@@ -74,6 +75,10 @@ def embed_img(img, box, model, img_size=160):
     return embed
 
 @profile
+def scene_detecting(videos):
+    return scene_detect(videos)
+
+@profile
 def tracking(videos):
 
     detector = DSFD(device=device, PATH_WEIGHT = '/home/ubuntu/project/detectors/dsfd/weights/dsfd_vgg_0.880.pth')
@@ -81,14 +86,24 @@ def tracking(videos):
 
     sort_weight = '/home/ubuntu/project/deepsort/deep/checkpoint/ckpt.t7'
 
-    frame_num = 0
+    tracker = DeepSort(model_path=sort_weight, n_init=1, nms_max_overlap=0.5, use_cuda=True, max_age=1)
+
     objects = []
 
     for video in videos:
 
-        tracker = DeepSort(model_path=sort_weight, nms_max_overlap=0.5, use_cuda=True, max_age=1)
+        tracker.reset()
+        
+        scene_list = scene_detecting(video)
+        
+        frame_num = 0
 
         for frame in tqdm(video, desc="Frame Processed :"):
+
+            if frame_num >= scene_list[0]:
+                tracker.reset()
+                scene_list.pop(0)
+
             img = frame.copy()
 
             boxes = detector.detect_faces(img, scales=[0.7])
