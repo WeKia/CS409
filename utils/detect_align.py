@@ -13,7 +13,7 @@ def detect_align_face(img, model, scale=0.7):
 
     img_resized = cv2.resize(img, dsize=(0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
 
-    boxes, _, landmarks = model.detect(img_resized, landmarks=True)
+    boxes, probs, landmarks = model.detect(img_resized, landmarks=True)
 
     if boxes is None:
         return [], []
@@ -25,4 +25,4 @@ def detect_align_face(img, model, scale=0.7):
 
     boxes = boxes / scale
 
-    return boxes, faces
+    return boxes, faces, probs

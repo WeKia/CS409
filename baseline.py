@@ -7,6 +7,7 @@ warnings.simplefilter("ignore", FutureWarning)
 import glob
 import time
 import math
+import pandas as pd
 import numpy as np
 import cv2
 
@@ -17,7 +18,7 @@ from deepsort.deep_sort import DeepSort
 from InsightFace.model import Backbone
 from utils.detect_align import detect_align_face, test_transform
 from utils.video_pipeline import get_videos_from_file
-from utils.ops import xyxy_to_xywh
+from utils.ops import xyxy_to_xywh, make_csv
 
 class detected_object:
     def __init__(self, id):
@@ -138,7 +139,7 @@ def main(args):
 
     if args.test:
         video2_frames = []
-        #video1_frames = video1_frames[:100]
+        #video1_frames = video1_frames[:400]
     else:
         video2_frames = get_videos_from_file(args.video2)
 
@@ -172,6 +173,8 @@ def test(args):
     frames = videos[0].copy()
 
     for obj in objects:
+        if obj.id == 0:
+            continue
 
         for i in range(len(obj.faces)):            
             frame_num = obj.frames[i]
@@ -193,13 +196,15 @@ def test(args):
             
             rgb = (red, green, blue)
             
-            frame = cv2.putText(frame, f'person_{identity}', (x1 - 10, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX,0.5, rgb, 2)
+            frame = cv2.putText(frame, f'person_{identity}', (x1 - 10, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 1, rgb, 2)
             frame = cv2.rectangle(frame, (x1, y1), (x2, y2), rgb, 1)
 
             frames[frame_num] = frame
+        
+    make_csv(objects, '/home/ubuntu/project/tmp/baseline.csv')
 
     fourcc = cv2.VideoWriter_fourcc(*'XVID')   
-    video_tracked = cv2.VideoWriter(f'/home/ubuntu/project/tmp/video_tracked_720p.mp4', fourcc, 20.0, dim)
+    video_tracked = cv2.VideoWriter(f'/home/ubuntu/project/tmp/video_tracked_720p.mp4', fourcc, 30.0, dim)
 
     for frame in frames:
         video_tracked.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
@@ -208,7 +213,7 @@ def test(args):
 
     if args.webm:
         fourcc = cv2.VideoWriter_fourcc(*'VP90')   
-        webm = cv2.VideoWriter('/home/ubuntu/project/tmp/video_tracked_720p.webm', fourcc, 20.0, dim)
+        webm = cv2.VideoWriter('/home/ubuntu/project/tmp/video_tracked_720p.webm', fourcc, 30.0, dim)
 
         for frame in frames:
             webm.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))

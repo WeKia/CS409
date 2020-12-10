@@ -11,11 +11,13 @@ import cv2
 #from memory_profiler import profile
 from facenet_pytorch import MTCNN, InceptionResnetV1
 from sklearn.cluster import DBSCAN
+from InsightFace.model import Backbone
 from tqdm import tqdm
 from deepsort.deep_sort import DeepSort
 from detectors import DSFD
+from utils.detect_align import detect_align_face, test_transform
 from utils.video_pipeline import get_videos_from_file
-from utils.ops import xyxy_to_xywh
+from utils.ops import xyxy_to_xywh, make_csv
 from utils.scene_dectector import scene_detect
 
 class detected_object:
@@ -41,6 +43,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--video1', type=str)
     parser.add_argument('--video2', type=str)
+    parser.add_argument('--embbeder', type=str, default='Arcface')
     parser.add_argument('--test', action='store_true')
     parser.add_argument('--comparing', action='store_true')
     parser.add_argument('--compare_threshold', default=0.5, type=float)
@@ -52,7 +55,7 @@ def parse_arguments():
     args = parser.parse_args()
     return args
 
-def embed_img(img, box, model, img_size=160):
+def embed_img_facenet(img, box, model, img_size=160):
     x1, y1, x2, y2 = box[0:4]
     x1 = int(x1)
     y1 = int(y1)
@@ -74,19 +77,35 @@ def embed_img(img, box, model, img_size=160):
 
     return embed
 
-@profile
+def embed_img_arcface(face, embedder):
+    trans_img = test_transform(face).to('cuda').unsqueeze(0)
+
+    with torch.no_grad():
+        embed = embedder(trans_img)
+
+    return embed
+
+#@profile
 def scene_detecting(videos):
     return scene_detect(videos)
 
-@profile
-def tracking(videos):
+#@profile
+def tracking(videos, args):
 
-    detector = DSFD(device=device, PATH_WEIGHT = '/home/ubuntu/project/detectors/dsfd/weights/dsfd_vgg_0.880.pth')
-    facenet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
+    # We can do it more simply but not now
+    if args.embbeder == "facenet":
+        detector = DSFD(device=device, PATH_WEIGHT = '/home/ubuntu/project/detectors/dsfd/weights/dsfd_vgg_0.880.pth')
+        facenet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
+    else:
+        detector = MTCNN(image_size=112, device=device, post_process=False, thresholds=[0.7, 0.8, 0.9])
+        arcface = Backbone(50, 0.6, 'ir_se').to('cuda')
+
+        arcface.load_state_dict(torch.load('/home/ubuntu/project/InsightFace/weights/ir_50se.pth'))
+        arcface.eval()
 
     sort_weight = '/home/ubuntu/project/deepsort/deep/checkpoint/ckpt.t7'
 
-    tracker = DeepSort(model_path=sort_weight, n_init=1, nms_max_overlap=0.5, use_cuda=True, max_age=1)
+    tracker = DeepSort(model_path=sort_weight, n_init=0, nms_max_overlap=0.5, use_cuda=True, max_age=1)
 
     objects = []
 
@@ -106,24 +125,33 @@ def tracking(videos):
 
             img = frame.copy()
 
-            boxes = detector.detect_faces(img, scales=[0.7])
+            if args.embbeder == "facenet":
+                boxes = detector.detect_faces(img, scales=[0.7])
 
-            if len(boxes) > 0:
+                if len(boxes) > 0:
 
-                boxes, scores = boxes[:, 0:4], boxes[:, 4]
+                    boxes, scores = boxes[:, 0:4], boxes[:, 4]
 
-                #transform xyxy boxes to xywh
-                boxes = xyxy_to_xywh(boxes)
+                    #transform xyxy boxes to xywh
+                    boxes = xyxy_to_xywh(boxes)
+
+                    outputs = tracker.update(boxes, scores, img)
+                else: outputs = []
+            else:
+                boxes, faces, scores = detect_align_face(img, detector)
 
                 outputs = tracker.update(boxes, scores, img)
-            
-            else: outputs = []
+
+                assert (len(outputs) == len(faces))
 
             for box in outputs:
                 id = box[-1]
                 new_obj = True
 
-                embed = embed_img(img, box, facenet)
+                if args.embbeder == "facenet":
+                    embed = embed_img_facenet(img, box, facenet)
+                else:
+                    embed = embed_img_arcface(face, arcface)
 
                 for obj in objects:
                     if obj.id == id:
@@ -141,7 +169,7 @@ def tracking(videos):
     return objects
 
 
-@profile
+#@profile
 def clustering(objects):
 
     means = []
@@ -163,7 +191,7 @@ def clustering(objects):
 
         dist = np.array(dist)
 
-    clustering = DBSCAN(eps=0.5, min_samples=1).fit(means)
+    clustering = DBSCAN(eps=0.7, min_samples=1).fit(means)
 
     lab = clustering.labels_
 
@@ -183,7 +211,7 @@ def clustering(objects):
     return detected
 
 
-@profile
+#@profile
 def comparing(objects):
     
     detected = []
@@ -234,7 +262,7 @@ def main(args):
 
     if args.test:
         video2_frames = []
-        #video1_frames = video1_frames[:1000]
+        video1_frames = video1_frames[:1500]
     else:
         video2_frames = get_videos_from_file(args.video2)
 
@@ -242,7 +270,7 @@ def main(args):
 
     del video1_frames
 
-    objects = tracking(videos)
+    objects = tracking(videos, args)
 
     objects = np.array(objects)
 
@@ -299,8 +327,10 @@ def test(args):
 
             frames[frame_num] = frame
 
+    make_csv(objects, '/home/ubuntu/project/tmp/advanced.csv')
+
     fourcc = cv2.VideoWriter_fourcc(*'XVID')   
-    video_tracked = cv2.VideoWriter(f'/home/ubuntu/project/tmp/video_tracked_720p.mp4', fourcc, 20.0, dim)
+    video_tracked = cv2.VideoWriter(f'/home/ubuntu/project/tmp/video_tracked_720p.mp4', fourcc, 30.0, dim)
 
     for frame in frames:
         video_tracked.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
@@ -309,7 +339,7 @@ def test(args):
 
     if args.webm:
         fourcc = cv2.VideoWriter_fourcc(*'VP90')   
-        webm = cv2.VideoWriter('/home/ubuntu/project/tmp/video_tracked_720p.webm', fourcc, 20.0, dim)
+        webm = cv2.VideoWriter('/home/ubuntu/project/tmp/video_tracked_720p.webm', fourcc, 30.0, dim)
 
         for frame in frames:
             webm.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
